@@ -19,10 +19,10 @@ INTERVAL (INTERVAL '5' MINUTE)
    PARTITION part_01 values LESS THAN (TO_TIMESTAMP('01-JAN-2021','DD-MON-YYYY'))
 );
 
-soda create purchase_orders;
+soda create PURCHASE_ORDERS;
 
 soda list;
-soda count purchase_orders;
+soda count PURCHASE_ORDERS;
 
 
 -- empty collection
@@ -108,6 +108,22 @@ soda get purchase_orders -f {"shippingInstructions.address.geometry": {"$near": 
 
 
 -- Invoices reporting
+drop table invoices purge;
+
+-- TODO: mapping a SODA collection on this?
+CREATE TABLE INVOICES (
+    id VARCHAR2(255) not null primary key,
+    CREATED_ON timestamp default sys_extract_utc(SYSTIMESTAMP) not null,
+    price number not null,
+    price_with_country_vat number not null,
+	country_name VARCHAR2(500 BYTE) not null
+)
+PARTITION BY RANGE (CREATED_ON)
+INTERVAL (INTERVAL '5' MINUTE)
+-- SUBPARTITION BY HASH (ID) SUBPARTITIONS 32 -- useful starting with 21c
+(
+   PARTITION part_01 values LESS THAN (TO_TIMESTAMP('01-JAN-2021','DD-MON-YYYY'))
+);
 
 CREATE TABLE COUNTRY_TAXES (
     COUNTRY_NAME VARCHAR2(500 BYTE) not null primary key,
@@ -482,3 +498,70 @@ create index idx_po_shippingInstructions_address_street on purchase_orders( json
 create index idx_po_shippingInstructions_address_city on purchase_orders( json_value( json_document, '$.shippingInstructions.address.city' ERROR on ERROR NULL ON EMPTY ) ) compress advanced low;
 create index idx_po_shippingInstructions_address_state on purchase_orders( json_value( json_document, '$.shippingInstructions.address.state' ERROR on ERROR NULL ON EMPTY ) ) compress advanced low;
 ...
+
+
+CREATE OR REPLACE VIEW INVOICES_REPORT AS
+SELECT p.id as purchase_order_id,
+       SUM(jt.quantity * jt.unitPrice) as totalPrice,
+       SUM(jt.quantity * jt.unitPrice * (1 + ct.tax)) as totalPriceWithVAT,
+       jt.country
+  FROM purchase_orders p,
+       JSON_TABLE( json_document, '$'
+                   Columns(Nested items[*]
+                         Columns( quantity, unitPrice ),
+                     country path '$.shippingInstructions.address.country')
+       ) jt,
+       invoices i,
+       country_taxes ct
+ WHERE ct.country_name = jt.country
+   and i.id(+) = p.id
+   AND i.id is null -- anti-join
+ GROUP BY p.id, jt.country;
+
+INSERT INTO invoices
+       (id, price, price_with_country_vat, country_name)
+SELECT purchase_order_id,
+       totalPrice,
+       totalPriceWithVAT,
+       country
+  FROM INVOICES_REPORT;
+
+CREATE MATERIALIZED VIEW PURCHASE_ORDERS_MV
+organization heap COMPRESS FOR QUERY LOW
+refresh fast ON STATEMENT
+enable query rewrite
+AS
+SELECT p.id, jt.quantity, jt.unitPrice, jt.country
+  FROM purchase_orders p,
+       JSON_TABLE( json_document, '$'
+         Columns(Nested items[*]
+           Columns(
+             quantity number path '$.quantity'
+                      error on error null on empty,
+             unitPrice number path '$.unitPrice'
+                       error on error null on empty),
+           country varchar2(500) path
+                 '$.shippingInstructions.address.country'
+                   error on error null on empty)
+       ) jt;
+
+CREATE OR REPLACE VIEW INVOICES_REPORT AS
+SELECT p.id as purchase_order_id,
+       SUM(p.quantity * p.unitPrice) as totalPrice,
+       SUM(p.quantity * p.unitPrice * (1 + ct.tax))
+                                    as totalPriceWithVAT,
+       p.country
+  FROM PURCHASE_ORDERS_MV p
+       left outer join invoices i on i.id = p.id,
+       country_taxes ct
+ WHERE ct.country_name = p.country
+   AND i.id is null -- anti-join
+ GROUP BY p.id, p.country;
+
+INSERT INTO invoices
+       (id, price, price_with_country_vat, country_name)
+SELECT purchase_order_id,
+       totalPrice,
+       totalPriceWithVAT,
+       country
+  FROM INVOICES_REPORT;

@@ -35,9 +35,6 @@ public class PurchaseOrdersGenerator implements Runnable {
 	private final OracleJsonFactory factory = new OracleJsonFactory();
 	private final ByteArrayOutputStream out = new ByteArrayOutputStream();
 
-	protected transient long loadedDocuments = 0;
-	protected transient double bytesLoadedPerSecond = 0d;
-	protected transient double documentsLoadedPerSecond = 0d;
 	protected Metrics metrics;
 
 	public PurchaseOrdersGenerator(int id, PoolDataSource pds, CountDownLatch countDownLatch, String collectionName) {
@@ -55,18 +52,6 @@ public class PurchaseOrdersGenerator implements Runnable {
 		this.random = new MyRandom();
 		this.metrics = new Metrics();
 		this.collectionName = collectionName;
-	}
-
-	public long getLoadedDocuments() {
-		return loadedDocuments;
-	}
-
-	public double getBytesLoadedPerSecond() {
-		return bytesLoadedPerSecond;
-	}
-
-	public double getDocumentsLoadedPerSecond() {
-		return documentsLoadedPerSecond;
 	}
 
 	public void run() {
@@ -91,46 +76,50 @@ public class PurchaseOrdersGenerator implements Runnable {
 				}
 
 				//System.out.println("Thread " + id + ": generating " + RANDOM_DOCS_PER_THREAD + " random JSON documents...");
-				final byte[][] cache = new byte[RANDOM_DOCS_PER_THREAD][];
+				final OracleDocument[] cache = new OracleDocument[RANDOM_DOCS_PER_THREAD];
+				final long[] bytesCache = new long[RANDOM_DOCS_PER_THREAD];
+				final double[] amountsCache = new double[RANDOM_DOCS_PER_THREAD];
 				long bytes = 0;
 				for (int i = 0; i < RANDOM_DOCS_PER_THREAD; i++) {
-					final byte[] osonData = generatePurchaseOrder();
+					final byte[] osonData = generatePurchaseOrder(amountsCache, i);
+					bytesCache[i] = osonData.length;
 					bytes += osonData.length;
-					cache[i] = osonData;
+					cache[i] = db.createDocumentFrom(osonData);
 				}
 
 				//System.out.println("Thread " + id + ": random JSON docs generation OK (" + bytes + " in the local cache)");
 
 				OracleConnection realConnection = (OracleConnection) c;
+
+				int j = 0;
+
+				final int randomModulo = Math.min(RANDOM_DOCS_PER_THREAD, RANDOM_DOCS_PER_THREAD / 2 + random.nextInt(RANDOM_DOCS_PER_THREAD / 2));
+
+				long loadedDocuments = 0;
+				long bytesSent = 0;
+				double salesPrice = 0d;
+
+
 				while (true) {
 					try {
-						long bytesSent = 0;
-						int j = 0;
-						final long startTime = System.currentTimeMillis();
 
 						for (int i = 0; i < BATCH_SIZE; i++) {
 							// DATA can come from a simulator (this demo) or from a Kafka queue
 							// or can be managed one by one (no batch ingest)
-							final byte[] osonData = cache[j];
-							j = ++j % RANDOM_DOCS_PER_THREAD;
-							bytesSent += osonData.length;
-							batchDocuments.add(db.createDocumentFrom(osonData));
+							bytesSent += bytesCache[j];
+							salesPrice += amountsCache[j];
+							batchDocuments.add(cache[j]);
+							j = ++j % randomModulo;
 						}
+						loadedDocuments += BATCH_SIZE;
 
 						collection.insertAndGet(batchDocuments.iterator(), insertOptions);
 
 						realConnection.commit(commitOptions);
 
-						final long endTime = System.currentTimeMillis();
-
 						batchDocuments.clear();
 
-						loadedDocuments += BATCH_SIZE;
-						documentsLoadedPerSecond = 1000d * ((double) BATCH_SIZE / (double) (endTime - startTime));
-						bytesLoadedPerSecond = 1000d * ((double) bytesSent / (double) (endTime - startTime));
-
-						setMetrics(documentsLoadedPerSecond,bytesLoadedPerSecond);
-
+						metrics.update(loadedDocuments, bytesSent, salesPrice);
 					} catch (SQLException sqle) {
 						try {
 							c.rollback();
@@ -149,12 +138,7 @@ public class PurchaseOrdersGenerator implements Runnable {
 		}
 	}
 
-	private void setMetrics(double documentsLoadedPerSecond, double bytesLoadedPerSecond) {
-		metrics.bytesLoadedPerSecond = bytesLoadedPerSecond;
-		metrics.documentsLoadedPerSecond = documentsLoadedPerSecond;
-	}
-
-	private byte[] generatePurchaseOrder() {
+	private byte[] generatePurchaseOrder(final double[] amountsCache, final int index) throws SQLException {
 		out.reset();
 		OracleJsonGenerator gen = factory.createJsonBinaryGenerator(out);
 
@@ -163,11 +147,13 @@ public class PurchaseOrdersGenerator implements Runnable {
 		final String firstName = random.randomFirstName();
 		final String lastName = random.randomLastName();
 		final String fullName = String.format("%s %s", firstName, lastName);
-		final Date dateOfPO = new Date();
+		final Calendar calendar = Calendar.getInstance();
+		calendar.add(Calendar.MILLISECOND, index);
+		final Date dateOfPO = calendar.getTime();
 		final String user = String.format("%s%s", firstName.charAt(0), lastName.substring(0, Math.min(lastName.length(), 8)).toUpperCase());
 		final Address address = random.randomAddress();
 
-
+		//gen.write("threadId", factory.createValue(new NUMBER(id)));
 		gen.write("reference", String.format("%s-%2$tY%2$tm%2$td", user, dateOfPO));
 		gen.write("requestor", fullName);
 		gen.write("user", user);
@@ -180,7 +166,18 @@ public class PurchaseOrdersGenerator implements Runnable {
 		gen.write("state", address.stateAbbr());
 		gen.write("zipCode", address.zipCode());
 		gen.write("country", address.country());
-		gen.writeEnd();
+
+		gen.writeStartObject("geometry");
+		gen.write("type", "Point");
+		gen.writeStartArray("coordinates");
+		gen.write(factory.createValue(new NUMBER(Double.parseDouble(address.longitude()))));
+		gen.write(factory.createValue(new NUMBER(Double.parseDouble(address.latitude()))));
+		gen.writeEnd(); // coordinates[]
+
+		gen.writeEnd(); // geometry
+
+
+		gen.writeEnd(); // address
 		final int phones = random.nextInt(4);
 
 		if (phones > 0) {
@@ -193,7 +190,7 @@ public class PurchaseOrdersGenerator implements Runnable {
 				gen.writeEnd();
 			}
 
-			gen.writeEnd();
+			gen.writeEnd(); // phone[]
 		}
 
 
@@ -212,6 +209,7 @@ public class PurchaseOrdersGenerator implements Runnable {
 
 		gen.writeStartArray("items");
 
+		double totalPrice = 0d;
 		for (int i = 0; i < items; i++) {
 			gen.writeStartObject();
 
@@ -220,10 +218,15 @@ public class PurchaseOrdersGenerator implements Runnable {
 			gen.write("description", product.name);
 			gen.write("unitPrice", product.price);
 			gen.write("UPCCode", product.code);
-			gen.write("quantity", factory.createValue(new NUMBER(1 + random.nextInt(4))));
+			final int quantity = 1 + random.nextInt(4);
+			gen.write("quantity", factory.createValue(new NUMBER(quantity)));
+
+			totalPrice += quantity * product.priceRaw;
 
 			gen.writeEnd();
 		}
+
+		amountsCache[index] = totalPrice;
 
 		gen.writeEnd();
 

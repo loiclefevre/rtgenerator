@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 
@@ -26,14 +27,17 @@ public class PurchaseOrdersLoader {
 	public static void main(String[] args) {
 		System.out.println("Starting loader...");
 
-		if(args.length < 3) {
+		if (args.length < 3) {
 			System.out.println("Usage: loader <autonomous database service name> <user> <password> [wallet path: ./wallet*] [collection: purchase_orders*] [async: true|false*] [batch size: 1-50000, 10000*] [threads: 1-200, VCPUs*] [append: true*|false] [start with truncate: true|false*] [random docs generated per thread: 10-100000, 10000*]");
-			System.out.println("Remark: the Autonomous database wallet must be extracted in a wallet subfolder from this directory: "+new File(".").getAbsolutePath());
+			System.out.println("Remark: the Autonomous database wallet must be extracted in a wallet subfolder from this directory: " + new File(".").getAbsolutePath());
 			System.exit(-1);
 		}
 
 		PoolDataSource pds;
 		int cores = Runtime.getRuntime().availableProcessors();
+
+		final ThreadGroup tg = new ThreadGroup("Generators");
+		tg.setMaxPriority(Thread.NORM_PRIORITY + 2);
 
 		try {
 			String databaseService = args[0];
@@ -68,7 +72,7 @@ public class PurchaseOrdersLoader {
 			long initialDocumentscount = 0;
 
 			try (Connection c = pds.getConnection()) {
-				try (PreparedStatement p = c.prepareStatement("select /*+ parallel(p) */ count(*) from "+collectionName+" p")) {
+				try (PreparedStatement p = c.prepareStatement("select /*+ parallel(p) */ count(*) from " + collectionName + " p")) {
 					System.out.print("Initializing current JSON document counter...");
 					System.out.flush();
 					try (ResultSet r = p.executeQuery()) {
@@ -80,8 +84,15 @@ public class PurchaseOrdersLoader {
 				}
 			}
 
-			final ThreadGroup tg = new ThreadGroup("Generators");
-			tg.setMaxPriority(Thread.NORM_PRIORITY + 2);
+			Runtime.getRuntime().addShutdownHook(new Thread() {
+				public void run() {
+					try {
+						tg.interrupt();
+					} catch (Throwable t) {
+						Thread.currentThread().interrupt();
+					}
+				}
+			});
 
 			final List<PurchaseOrdersGenerator> generators = new ArrayList<>();
 
@@ -92,48 +103,47 @@ public class PurchaseOrdersLoader {
 			}
 
 			long startTime;
-			long initStarttime = 0;
+			final long initStarttime = System.currentTimeMillis();
 			while (true) {
-				long temp = initialDocumentscount;
+				long loadedDocuments = initialDocumentscount;
 				double bytesLoadedPerSecond = 0.0d;
 				double documentsLoadedPerSecond = 0.0d;
+				double salesPricePerSecond = 0.0d;
 
 				startTime = System.currentTimeMillis();
 				for (PurchaseOrdersGenerator generator : generators) {
 					final Metrics metrics = generator.getMetrics();
-					bytesLoadedPerSecond += metrics.bytesLoadedPerSecond;
-					documentsLoadedPerSecond += metrics.documentsLoadedPerSecond;
-				}
-				Thread.sleep(500L - (System.currentTimeMillis() - startTime));
-
-				double bytesLoadedPerSecond2 = 0.0d;
-				double documentsLoadedPerSecond2 = 0.0d;
-
-
-				startTime = System.currentTimeMillis();
-				for (PurchaseOrdersGenerator generator : generators) {
-					temp += generator.getLoadedDocuments();
-
-					if (initStarttime == 0 && temp != initialDocumentscount) {
-						initStarttime = System.currentTimeMillis();
-					}
-
-					final Metrics metrics = generator.getMetrics();
-					bytesLoadedPerSecond2 += metrics.bytesLoadedPerSecond;
-					documentsLoadedPerSecond2 += metrics.documentsLoadedPerSecond;
+					loadedDocuments += metrics.getTotalLoadedDocuments();
+					bytesLoadedPerSecond += metrics.getBytesSentPerMs();
+					documentsLoadedPerSecond += metrics.getDocumentsLoadedPerMs();
+					salesPricePerSecond += metrics.getSalesPricePerMs();
 				}
 
-				System.out.print("\r                                                                  ");
-				System.out.printf("\rLoaded %,d JSON documents at %.1f docs/s (%.1f MB/s)", temp, (documentsLoadedPerSecond2 + documentsLoadedPerSecond) / 2.0d, ((bytesLoadedPerSecond2 + bytesLoadedPerSecond) / 2.0d) / (1024d * 1024d));
-				System.out.printf(" [%.1f docs/s]", 1000.0d * ((double) (temp - initialDocumentscount) / (double) (System.currentTimeMillis() - initStarttime)));
+				System.out.print("\r                                                                        ");
+				if (documentsLoadedPerSecond < 0.05d) {
+					System.out.printf(Locale.US, "\rLoaded %,d...", loadedDocuments);
+				}
+				else {
+					System.out.printf(Locale.US, "\rLoaded %,d POs for $ %,.2f/s at %,.1f PO/s (%,.2f MB/s)",
+							loadedDocuments,
+							1000d * salesPricePerSecond,
+							1000d * documentsLoadedPerSecond,
+							1000d * bytesLoadedPerSecond / (1024d * 1024d));
+				}
+				//System.out.printf(" [%,.1f PO/s]", 1000.0d * ((double) (loadedDocuments - initialDocumentscount) / (double) (System.currentTimeMillis() - initStarttime)));
 				System.out.flush();
 
-				Thread.sleep(500L - (System.currentTimeMillis() - startTime));
+				Thread.sleep(1000L - (System.currentTimeMillis() - startTime));
 			}
 
 //			countDownLatch.await();
 		} catch (Throwable t) {
 			t.printStackTrace();
+		}
+		finally {
+			if(tg != null) {
+				tg.interrupt();
+			}
 		}
 	}
 

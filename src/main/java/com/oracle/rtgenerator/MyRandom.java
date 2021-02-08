@@ -124,11 +124,13 @@ public class MyRandom {
 	public static class Product {
 		public final String name;
 		public final OracleJsonValue price;
+		public final double priceRaw;
 		public final OracleJsonValue code;
 
-		public Product(String name, OracleJsonValue price, OracleJsonValue code) {
+		public Product(String name, OracleJsonValue price, double priceRaw, OracleJsonValue code) {
 			this.name = name;
 			this.price = price;
+			this.priceRaw = priceRaw;
 			this.code = code;
 		}
 
@@ -137,6 +139,7 @@ public class MyRandom {
 
 			return new Product(items[0],
 					factory.createValue(new NUMBER( Double.parseDouble(items[1]))),
+					Double.parseDouble(items[1]),
 					factory.createValue(new NUMBER( Long.parseLong(items[2]))));
 		}
 	}

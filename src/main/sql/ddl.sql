@@ -5,7 +5,7 @@ drop table purchase_orders purge;
 -- create
 -- Warning for on-premises: uses Partitioning Option
 create table PURCHASE_ORDERS (
-                    ID VARCHAR2(255) not null primary key,
+                    ID VARCHAR2(255) default SYS_GUID() not null primary key,
                     CREATED_ON timestamp default sys_extract_utc(SYSTIMESTAMP) not null,
                     LAST_MODIFIED timestamp default sys_extract_utc(SYSTIMESTAMP) not null,
                     VERSION varchar2(255) not null,
@@ -14,7 +14,7 @@ create table PURCHASE_ORDERS (
                     LOB(JSON_DOCUMENT) STORE AS (CACHE)
 PARTITION BY RANGE (CREATED_ON)
 INTERVAL (INTERVAL '5' MINUTE)
--- SUBPARTITION BY HASH (ID) SUBPARTITIONS 32 -- useful starting with 21c
+--SUBPARTITION BY HASH (ID) SUBPARTITIONS 64 -- useful starting with 21c
 (
    PARTITION part_01 values LESS THAN (TO_TIMESTAMP('01-JAN-2021','DD-MON-YYYY'))
 );
@@ -53,10 +53,11 @@ BEGIN
     -- Create the index
     status := collection.create_index(spec);
 
-    DBMS_OUTPUT.put_Line('Status: ' || status);
+    IF status = 1 THEN
+    	DBMS_OUTPUT.put_Line('Status: OK');
+    END IF;
 END;
 /
-
 -- creates: create index idx_po_requestor on purchase_orders( json_value( json_document, '$.requestor' ERROR on ERROR NULL ON EMPTY ) ) compress advanced low;
 
 -- Wildcard search:
@@ -383,10 +384,37 @@ select extract(minute from created_on) * 100 + round(extract(second from created
 group by extract(minute from created_on) * 100 + round(extract(second from created_on))
 order by 1;
 
+select /*+ parallel (8) */
+trunc( (select count (*) from purchase_orders) /
+(select extract( day from diff )*24*60*60  +
+           extract( hour from diff )*60*60  +
+           extract( minute from diff )*60  +
+           round(extract( second from diff ) ) total_seconds
+      from (select max (created_on) - min(created_on) diff
+             from purchase_orders))
+) avg from dual ;
+
 select min(created_on), max(created_on), count(*) from purchase_orders;
 select count(*) from purchase_orders;
 
 -- JSON Search index
+DECLARE
+    collection  SODA_COLLECTION_T;
+    spec        VARCHAR2(32000);
+    status      NUMBER;
+BEGIN
+    -- Open the collection
+    collection := DBMS_SODA.open_collection('purchase_orders');
+
+    -- Define the index specification
+    spec := '{"name"   : "SIDX_PO"}';
+    -- Create the index
+    status := collection.create_index(spec);
+
+    DBMS_OUTPUT.put_Line('Status: ' || status);
+END;
+/
+
 select * from CTX_PARAMETERS;
 
 exec CTXSYS.CTX_ADM.SET_PARAMETER('default_index_memory','4294967296'); -- 4 GB
@@ -437,9 +465,18 @@ begin
   end;
   ctx_ddl.create_preference('my_storage_pref', 'BASIC_STORAGE');
   ctx_ddl.set_attribute('my_storage_pref', 'stage_itab', 'YES');
-  ctx_ddl.set_attribute('my_storage_pref', 'stage_itab_parallel', '8');
-  ctx_ddl.set_attribute('my_storage_pref', 'stage_itab_max_rows', '10000');
+  ctx_ddl.set_attribute('my_storage_pref', 'stage_itab_parallel', '4');
+  ctx_ddl.set_attribute('my_storage_pref', 'stage_itab_max_rows', '100000');
   ctx_ddl.set_attribute('my_storage_pref', 'stage_itab_auto_opt', 'TRUE');
+
+  begin
+    ctx_ddl.drop_section_group('my_sec_group_pref');
+  exception when others then null;
+  end;
+    ctx_ddl.create_section_group('my_sec_group_pref', 'PATH_SECTION_GROUP');
+    ctx_ddl.set_sec_grp_attr('my_sec_group_pref', 'json_enable', 'T');
+    -- ctx_ddl.add_sdata_section('my_sec_group_pref', 'requestor', 'requestor', 'Varchar2');
+    --ctx_ddl.set_section_attribute('my_sec_group_pref', 'requestor', 'OPTIMIZED_FOR', 'SEARCH');
 
   -- OPTIONAL: for the full-text search index to index only the requestor JSON field
   begin
@@ -457,9 +494,22 @@ end;
 -- Optimized Search Index
 -- To build on empty collection right after its creation
 CREATE SEARCH INDEX sidx_po ON purchase_orders (json_document) FOR JSON
-local( partition )
-PARAMETERS('filter ctxsys.null_filter Lexer my_lexer_pref Wordlist my_stem_fuzzy_pref Storage my_storage_pref DATAGUIDE OFF MEMORY 4G')
+local( partition, partition, partition, partition, partition, partition, partition )
+PARAMETERS('filter ctxsys.null_filter Lexer my_lexer_pref Wordlist my_stem_fuzzy_pref Storage my_storage_pref DATAGUIDE OFF SEARCH_ON TEXT MEMORY 4G')
 PARALLEL 8; -- Datastore my_user_datastore_pref
+
+CREATE INDEX sidx_po ON purchase_orders (json_document)
+--local( partition, partition, partition, partition, partition, partition, partition )
+INDEXTYPE IS CTXSYS.CONTEXT_V2
+PARAMETERS('filter ctxsys.null_filter Lexer my_lexer_pref Wordlist my_stem_fuzzy_pref Storage my_storage_pref section group my_sec_group_pref DATAGUIDE OFF MEMORY 4G')
+PARALLEL 8;
+
+CREATE INDEX my_jsn_idx ON PURCHASE_ORDERS (JSON_DOCUMENT) INDEXTYPE IS CTXSYS.CONTEXT_V2 PARAMETERS ('section group my_sec_group');
+
+
+CREATE SEARCH INDEX sidx_po ON purchase_orders (json_document) FOR JSON
+local( partition );
+
 
 select * from CTX_USER_INDEX_OBJECTS;
 

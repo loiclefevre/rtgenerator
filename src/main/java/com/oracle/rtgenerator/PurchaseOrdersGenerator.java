@@ -2,18 +2,25 @@ package com.oracle.rtgenerator;
 
 import com.github.javafaker.Address;
 import oracle.jdbc.internal.OracleConnection;
-import oracle.soda.OracleCollection;
-import oracle.soda.OracleDatabase;
-import oracle.soda.OracleDocument;
+import oracle.soda.*;
 import oracle.soda.rdbms.OracleRDBMSClient;
+import oracle.soda.rdbms.impl.OracleOperationBuilderImpl;
 import oracle.sql.NUMBER;
 import oracle.sql.json.OracleJsonFactory;
 import oracle.sql.json.OracleJsonGenerator;
 import oracle.ucp.jdbc.PoolDataSource;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InterruptedIOException;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.SQLRecoverableException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.TemporalAmount;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 
@@ -36,6 +43,8 @@ public class PurchaseOrdersGenerator implements Runnable {
 	private final ByteArrayOutputStream out = new ByteArrayOutputStream();
 
 	protected Metrics metrics;
+
+	private final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC);
 
 	public PurchaseOrdersGenerator(int id, PoolDataSource pds, CountDownLatch countDownLatch, String collectionName) {
 		this.id = id;
@@ -79,11 +88,11 @@ public class PurchaseOrdersGenerator implements Runnable {
 				final OracleDocument[] cache = new OracleDocument[RANDOM_DOCS_PER_THREAD];
 				final long[] bytesCache = new long[RANDOM_DOCS_PER_THREAD];
 				final double[] amountsCache = new double[RANDOM_DOCS_PER_THREAD];
-				long bytes = 0;
+				//long bytes = 0;
 				for (int i = 0; i < RANDOM_DOCS_PER_THREAD; i++) {
 					final byte[] osonData = generatePurchaseOrder(amountsCache, i);
 					bytesCache[i] = osonData.length;
-					bytes += osonData.length;
+					//bytes += osonData.length;
 					cache[i] = db.createDocumentFrom(osonData);
 				}
 
@@ -99,42 +108,72 @@ public class PurchaseOrdersGenerator implements Runnable {
 				long bytesSent = 0;
 				double salesPrice = 0d;
 
-
-				while (true) {
-					try {
-
-						for (int i = 0; i < BATCH_SIZE; i++) {
-							// DATA can come from a simulator (this demo) or from a Kafka queue
-							// or can be managed one by one (no batch ingest)
+				if (BATCH_SIZE == 1) {
+					while (true) {
+						try {
 							bytesSent += bytesCache[j];
 							salesPrice += amountsCache[j];
-							batchDocuments.add(cache[j]);
 							j = ++j % randomModulo;
+
+							loadedDocuments++;
+
+							collection.insertAndGet(cache[j]);
+
+							realConnection.commit(commitOptions);
+
+							metrics.update(loadedDocuments, bytesSent, salesPrice);
+						} catch (SQLException sqle) {
+							try {
+								c.rollback();
+							} catch (SQLException ignored) {
+							}
+
+							throw sqle;
 						}
-						loadedDocuments += BATCH_SIZE;
-
-						collection.insertAndGet(batchDocuments.iterator(), insertOptions);
-
-						realConnection.commit(commitOptions);
-
-						batchDocuments.clear();
-
-						metrics.update(loadedDocuments, bytesSent, salesPrice);
-					} catch (SQLException sqle) {
+					}
+				}
+				else {
+					while (true) {
 						try {
-							c.rollback();
-						} catch (SQLException ignored) {
-						}
 
-						throw sqle;
+							for (int i = 0; i < BATCH_SIZE; i++) {
+								// DATA can come from a simulator (this demo) or from a Kafka queue
+								// or can be managed one by one (no batch ingest)
+								bytesSent += bytesCache[j];
+								salesPrice += amountsCache[j];
+								batchDocuments.add(cache[j]);
+								j = ++j % randomModulo;
+							}
+							loadedDocuments += BATCH_SIZE;
+
+							collection.insertAndGet(batchDocuments.iterator());
+
+							realConnection.commit(commitOptions);
+
+							batchDocuments.clear();
+
+							metrics.update(loadedDocuments, bytesSent, salesPrice);
+						} catch (SQLException sqle) {
+							try {
+								c.rollback();
+							} catch (SQLException ignored) {
+							}
+
+							throw sqle;
+						}
 					}
 				}
 			}
-		} catch (Exception e) {
+		} catch (SQLRecoverableException | OracleBatchException e) {
+			if (!(e.getCause() instanceof InterruptedIOException || e.getCause() instanceof BatchUpdateException)) {
+				e.printStackTrace();
+			}
 			//e.printStackTrace();
-			Thread.currentThread().interrupt();
+		} catch (Exception e) {
+			e.printStackTrace();
 		} finally {
 			countDownLatch.countDown();
+			Thread.currentThread().interrupt();
 		}
 	}
 
@@ -142,22 +181,19 @@ public class PurchaseOrdersGenerator implements Runnable {
 		out.reset();
 		OracleJsonGenerator gen = factory.createJsonBinaryGenerator(out);
 
-		gen.writeStartObject(); // {
-
 		final String firstName = random.randomFirstName();
 		final String lastName = random.randomLastName();
 		final String fullName = String.format("%s %s", firstName, lastName);
-		final Calendar calendar = Calendar.getInstance();
-		calendar.add(Calendar.MILLISECOND, index);
-		final Date dateOfPO = calendar.getTime();
+		final Instant instant = Instant.now().plusMillis(index);
 		final String user = String.format("%s%s", firstName.charAt(0), lastName.substring(0, Math.min(lastName.length(), 8)).toUpperCase());
 		final Address address = random.randomAddress();
 
-		//gen.write("threadId", factory.createValue(new NUMBER(id)));
-		gen.write("reference", String.format("%s-%2$tY%2$tm%2$td", user, dateOfPO));
+		gen.writeStartObject(); // {
+		//gen.write("threadid", factory.createValue(new NUMBER(id)));
+		gen.write("reference", String.format("%s-%s", user, DATE_TIME_FORMATTER.format(instant)));
 		gen.write("requestor", fullName);
 		gen.write("user", user);
-		gen.write("requestedAt", dateOfPO.toInstant()); // TIMESTAMP binary Oracle Database
+		gen.write("requestedAt", instant.atOffset(ZoneOffset.UTC));
 		gen.writeStartObject("shippingInstructions");
 		gen.write("name", fullName);
 		gen.writeStartObject("address");

@@ -39,6 +39,17 @@ public class PurchaseOrdersLoader {
 		final ThreadGroup tg = new ThreadGroup("Generators");
 		tg.setMaxPriority(Thread.NORM_PRIORITY + 2);
 
+		Runtime.getRuntime().addShutdownHook(new Thread() {
+			public void run() {
+				try {
+					tg.interrupt();
+				} catch (Throwable t) {
+					Thread.currentThread().interrupt();
+				}
+				System.out.println();
+			}
+		});
+
 		try {
 			String databaseService = args[0];
 			String user = args[1];
@@ -84,16 +95,6 @@ public class PurchaseOrdersLoader {
 				}
 			}
 
-			Runtime.getRuntime().addShutdownHook(new Thread() {
-				public void run() {
-					try {
-						tg.interrupt();
-					} catch (Throwable t) {
-						Thread.currentThread().interrupt();
-					}
-				}
-			});
-
 			final List<PurchaseOrdersGenerator> generators = new ArrayList<>();
 
 			for (int j = 0; j < cores; j++) {
@@ -104,34 +105,19 @@ public class PurchaseOrdersLoader {
 
 			long startTime;
 			final long initStarttime = System.currentTimeMillis();
+
+			final MetricsDisplayer md = new MetricsDisplayer(initialDocumentscount, 10);
+
 			while (true) {
-				long loadedDocuments = initialDocumentscount;
-				double bytesLoadedPerSecond = 0.0d;
-				double documentsLoadedPerSecond = 0.0d;
-				double salesPricePerSecond = 0.0d;
+				md.resetCurrent();
 
 				startTime = System.currentTimeMillis();
 				for (PurchaseOrdersGenerator generator : generators) {
 					final Metrics metrics = generator.getMetrics();
-					loadedDocuments += metrics.getTotalLoadedDocuments();
-					bytesLoadedPerSecond += metrics.getBytesSentPerMs();
-					documentsLoadedPerSecond += metrics.getDocumentsLoadedPerMs();
-					salesPricePerSecond += metrics.getSalesPricePerMs();
+					md.addMetrics(metrics);
 				}
 
-				System.out.print("\r                                                                        ");
-				if (documentsLoadedPerSecond < 0.05d) {
-					System.out.printf(Locale.US, "\rLoaded %,d...", loadedDocuments);
-				}
-				else {
-					System.out.printf(Locale.US, "\rLoaded %,d POs for $ %,.2f/s at %,.1f PO/s (%,.2f MB/s)",
-							loadedDocuments,
-							1000d * salesPricePerSecond,
-							1000d * documentsLoadedPerSecond,
-							1000d * bytesLoadedPerSecond / (1024d * 1024d));
-				}
-				//System.out.printf(" [%,.1f PO/s]", 1000.0d * ((double) (loadedDocuments - initialDocumentscount) / (double) (System.currentTimeMillis() - initStarttime)));
-				System.out.flush();
+				md.display();
 
 				Thread.sleep(1000L - (System.currentTimeMillis() - startTime));
 			}
@@ -207,7 +193,7 @@ public class PurchaseOrdersLoader {
 		pds.setURL("jdbc:oracle:thin:@" + connectionService + "?TNS_ADMIN=" + new File(walletPath).getCanonicalPath().replace('\\', '/'));
 		pds.setUser(user);
 		pds.setPassword(password);
-		pds.setConnectionPoolName("JDBC_UCP_POOL:" + Thread.currentThread().getName());
+		pds.setConnectionPoolName("JDBC_UCP_POOL-" + Thread.currentThread().getName());
 		pds.setInitialPoolSize(cores + 1);
 		pds.setMinPoolSize(cores + 1);
 		pds.setMaxPoolSize(cores + 1);
@@ -235,7 +221,13 @@ public class PurchaseOrdersLoader {
 				System.out.print("Creating SODA collection " + name + " ...");
 				System.out.flush();
 
-				db.admin().createCollection(name);
+				db.admin().createCollection(name, db.createDocumentFromString(
+						"{\"keyColumn\":{\"name\":\"ID\",\"sqlType\":\"VARCHAR2\",\"maxLength\":255,\"assignmentMethod\":\"UUID\"}," +
+								"\"contentColumn\":{\"name\":\"JSON_DOCUMENT\",\"sqlType\":\"BLOB\",\"jsonFormat\":\"OSON\"}," +
+								"\"versionColumn\":{\"name\":\"VERSION\",\"type\":\"String\",\"method\":\"UUID\"}," +
+								"\"lastModifiedColumn\":{\"name\":\"LAST_MODIFIED\"}," +
+								"\"creationTimeColumn\":{\"name\":\"CREATED_ON\"}," +
+								"\"readOnly\":false}"));
 			}
 			else if (PurchaseOrdersGenerator.TRUNCATE_FIRST) {
 				try (Statement s = c.createStatement()) {

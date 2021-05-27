@@ -165,7 +165,7 @@ public class PurchaseOrdersGenerator implements Runnable {
 			}
 			//e.printStackTrace();
 		} catch (Exception e) {
-			e.printStackTrace();
+			//e.printStackTrace();
 		} finally {
 			countDownLatch.countDown();
 			Thread.currentThread().interrupt();

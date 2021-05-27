@@ -201,8 +201,8 @@ public class PurchaseOrdersGenerator implements Runnable {
 		gen.writeStartObject("geometry");
 		gen.write("type", "Point");
 		gen.writeStartArray("coordinates");
-		gen.write(factory.createValue(new NUMBER(Double.parseDouble(address.longitude()))));
-		gen.write(factory.createValue(new NUMBER(Double.parseDouble(address.latitude()))));
+		gen.write(factory.createValue(new NUMBER(Double.parseDouble(address.longitude().replace(',','.')))));
+		gen.write(factory.createValue(new NUMBER(Double.parseDouble(address.latitude().replace(',','.')))));
 		gen.writeEnd(); // coordinates[]
 
 		gen.writeEnd(); // geometry

@@ -8,7 +8,7 @@
 
     <groupId>com.oracle</groupId>
     <artifactId>rtgenerator</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 
     <name>RTGenerator</name>
 
@@ -95,7 +95,7 @@
         <dependency>
             <groupId>com.oracle.database.soda</groupId>
             <artifactId>orajsoda</artifactId>
-            <version>1.1.7</version>
+            <version>1.1.7.1</version>
         </dependency>
 
         <dependency>
@@ -142,6 +142,7 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.8.1</version>
                 <configuration>
@@ -155,10 +156,12 @@
                 <version>2.22.2</version>
             </plugin>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
                 <version>3.1.1</version>
             </plugin>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-assembly-plugin</artifactId>
                 <version>3.3.0</version>
                 <configuration>

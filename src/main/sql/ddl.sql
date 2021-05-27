@@ -58,6 +58,38 @@ BEGIN
     END IF;
 END;
 /
+
+
+DECLARE
+    collection  SODA_COLLECTION_T;
+    spec        VARCHAR2(32000);
+    status      NUMBER;
+BEGIN
+    -- Open the collection
+    collection := DBMS_SODA.open_collection('purchase_orders');
+
+    -- Define the index specification
+    spec := '{"name"   : "MY_INDEX_NAME",
+              "fields" : [{"path"     : "requestor",
+                           "datatype" : "string",
+                           "order"    : "asc"},
+                           {"path"     : "id",
+                            "datatype" : "number",
+                            "order"    : "asc"},
+                           {"path"     : "address.country",
+                            "datatype" : "string",
+                            "order"    : "asc"}
+                            ]}';
+    -- Create the index
+    status := collection.create_index(spec);
+
+    IF status = 1 THEN
+    	DBMS_OUTPUT.put_Line('Status: OK');
+    END IF;
+END;
+/
+
+
 -- creates: create index idx_po_requestor on purchase_orders( json_value( json_document, '$.requestor' ERROR on ERROR NULL ON EMPTY ) ) compress advanced low;
 
 -- Wildcard search:
@@ -400,7 +432,6 @@ select count(*) from purchase_orders;
 -- JSON Search index
 DECLARE
     collection  SODA_COLLECTION_T;
-    spec        VARCHAR2(32000);
     status      NUMBER;
 BEGIN
     -- Open the collection
@@ -497,6 +528,10 @@ CREATE SEARCH INDEX sidx_po ON purchase_orders (json_document) FOR JSON
 local( partition, partition, partition, partition, partition, partition, partition )
 PARAMETERS('filter ctxsys.null_filter Lexer my_lexer_pref Wordlist my_stem_fuzzy_pref Storage my_storage_pref DATAGUIDE OFF SEARCH_ON TEXT MEMORY 4G')
 PARALLEL 8; -- Datastore my_user_datastore_pref
+
+CREATE SEARCH INDEX sidx_po ON purchase_orders (json_document) FOR JSON
+PARAMETERS('Datastore my_user_datastore_pref DATAGUIDE ON SEARCH_ON TEXT'); -- Datastore my_user_datastore_pref
+
 
 CREATE INDEX sidx_po ON purchase_orders (json_document)
 --local( partition, partition, partition, partition, partition, partition, partition )

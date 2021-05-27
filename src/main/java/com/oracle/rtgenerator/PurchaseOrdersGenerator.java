@@ -84,19 +84,14 @@ public class PurchaseOrdersGenerator implements Runnable {
 					insertOptions.put("hint", "append");
 				}
 
-				//System.out.println("Thread " + id + ": generating " + RANDOM_DOCS_PER_THREAD + " random JSON documents...");
 				final OracleDocument[] cache = new OracleDocument[RANDOM_DOCS_PER_THREAD];
 				final long[] bytesCache = new long[RANDOM_DOCS_PER_THREAD];
 				final double[] amountsCache = new double[RANDOM_DOCS_PER_THREAD];
-				//long bytes = 0;
 				for (int i = 0; i < RANDOM_DOCS_PER_THREAD; i++) {
 					final byte[] osonData = generatePurchaseOrder(amountsCache, i);
 					bytesCache[i] = osonData.length;
-					//bytes += osonData.length;
 					cache[i] = db.createDocumentFrom(osonData);
 				}
-
-				//System.out.println("Thread " + id + ": random JSON docs generation OK (" + bytes + " in the local cache)");
 
 				OracleConnection realConnection = (OracleConnection) c;
 
@@ -221,7 +216,7 @@ public class PurchaseOrdersGenerator implements Runnable {
 
 			for (int i = 1; i <= phones; i++) {
 				gen.writeStartObject();
-				gen.write("type", random.phoneTypes[i - 1]);
+				gen.write("type", MyRandom.phoneTypes[i - 1]);
 				gen.write("number", i == 2 ? random.randomPhoneNumber().cellPhone() : random.randomPhoneNumber().phoneNumber());
 				gen.writeEnd();
 			}

@@ -106,7 +106,7 @@ public class PurchaseOrdersLoader {
 			long startTime;
 			final long initStarttime = System.currentTimeMillis();
 
-			final MetricsDisplayer md = new MetricsDisplayer(initialDocumentscount, 10);
+			final MetricsDisplayer md = new MetricsDisplayer(initialDocumentscount, 10, pds, collectionName);
 
 			while (true) {
 				md.resetCurrent();
@@ -194,9 +194,9 @@ public class PurchaseOrdersLoader {
 		pds.setUser(user);
 		pds.setPassword(password);
 		pds.setConnectionPoolName("JDBC_UCP_POOL-" + Thread.currentThread().getName());
-		pds.setInitialPoolSize(cores + 1);
-		pds.setMinPoolSize(cores + 1);
-		pds.setMaxPoolSize(cores + 1);
+		pds.setInitialPoolSize(cores + 2);
+		pds.setMinPoolSize(cores + 2);
+		pds.setMaxPoolSize(cores + 2);
 		pds.setTimeoutCheckInterval(30);
 		pds.setInactiveConnectionTimeout(120);
 		pds.setValidateConnectionOnBorrow(true);

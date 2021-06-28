@@ -163,9 +163,9 @@ public class PurchaseOrdersGenerator implements Runnable {
 			if (!(e.getCause() instanceof InterruptedIOException || e.getCause() instanceof BatchUpdateException)) {
 				e.printStackTrace();
 			}
-			//e.printStackTrace();
+			e.printStackTrace();
 		} catch (Exception e) {
-			//e.printStackTrace();
+			e.printStackTrace();
 		} finally {
 			countDownLatch.countDown();
 			Thread.currentThread().interrupt();
